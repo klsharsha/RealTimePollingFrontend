@@ -2,47 +2,129 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import SockJS from "sockjs-client";
 import { Client } from "@stomp/stompjs";
+import { BrowserRouter, Routes, Route, useParams, useNavigate } from "react-router-dom";
+import { v4 as uuidv4 } from "uuid";
 
-const API = "http://localhost:8080/api/polls";
-const WS_URL = "http://localhost:8080/ws";
+const API = "/api/polls";
+const WS_URL = "/ws";
 
-function App() {
+/* ---------------- TOKEN INIT ---------------- */
+function initToken() {
+  let token = localStorage.getItem("poll_token");
+  if (!token) {
+    token = uuidv4();
+    localStorage.setItem("poll_token", token);
+  }
+  return token;
+}
+
+/* ---------------- HOME PAGE ---------------- */
+function Home() {
+  const navigate = useNavigate();
   const [polls, setPolls] = useState([]);
-  const [poll, setPoll] = useState(null);
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState(["", ""]);
-  const [hasVoted, setHasVoted] = useState(false);
 
   useEffect(() => {
-    let token = localStorage.getItem("poll_token");
-    if (!token) {
-      token = crypto.randomUUID();
-      localStorage.setItem("poll_token", token);
-    }
-    fetchAllPolls();
+    initToken();
+    fetchPolls();
   }, []);
 
-  const fetchAllPolls = async () => {
+  const fetchPolls = async () => {
     const res = await axios.get(API);
     setPolls(res.data);
   };
 
   const createPoll = async () => {
-    await axios.post(API, {
+    const validOptions = options.filter(o => o.trim() !== "");
+    if (!question.trim() || validOptions.length < 2) {
+      alert("Enter question and at least 2 options");
+      return;
+    }
+
+    const res = await axios.post(API, {
       question,
-      options: options.map((text) => ({ text }))
+      options: validOptions.map(text => ({
+        text,
+        voteCount: 0
+      }))
     });
 
-    setQuestion("");
-    setOptions(["", ""]);
-    fetchAllPolls();
+    navigate(`/poll/${res.data.id}`);
   };
 
-  const joinPoll = async (id) => {
+  return (
+    <div style={styles.container}>
+      <h1 style={styles.title}>Real-Time Polling</h1>
+
+      <div style={styles.card}>
+        <h2>Create Poll</h2>
+
+        <input
+          style={styles.input}
+          placeholder="Question"
+          value={question}
+          onChange={e => setQuestion(e.target.value)}
+        />
+
+        {options.map((opt, i) => (
+          <input
+            key={i}
+            style={styles.input}
+            placeholder={`Option ${i + 1}`}
+            value={opt}
+            onChange={e => {
+              const newOptions = [...options];
+              newOptions[i] = e.target.value;
+              setOptions(newOptions);
+            }}
+          />
+        ))}
+
+        <button
+          style={styles.secondaryButton}
+          onClick={() => setOptions([...options, ""])}
+        >
+          Add Option
+        </button>
+
+        <button style={styles.primaryButton} onClick={createPoll}>
+          Create Poll
+        </button>
+      </div>
+
+      <h2 style={{ marginTop: 40 }}>Available Polls</h2>
+
+      {polls.map(p => (
+        <div key={p.id} style={styles.pollCard}>
+          <strong>{p.question}</strong>
+          <button
+            style={styles.primaryButton}
+            onClick={() => navigate(`/poll/${p.id}`)}
+          >
+            Open
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------- POLL PAGE ---------------- */
+function PollPage() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [poll, setPoll] = useState(null);
+  const [hasVoted, setHasVoted] = useState(false);
+
+  useEffect(() => {
+    loadPoll();
+    connectWebSocket();
+  }, [id]);
+
+  const loadPoll = async () => {
     const res = await axios.get(`${API}/${id}`);
     setPoll(res.data);
-    setHasVoted(false);
-    connectWebSocket(id);
   };
 
   const vote = async (optionId) => {
@@ -50,29 +132,27 @@ function App() {
 
     try {
       await axios.post(
-        `${API}/${poll.id}/vote/${optionId}`,
+        `${API}/${id}/vote/${optionId}`,
         {},
-        {
-          headers: { "X-User-Token": token }
-        }
+        { headers: { "X-User-Token": token } }
       );
       setHasVoted(true);
-    } catch (error) {
-      if (error.response?.status === 400) {
-        alert("You have already voted in this poll.");
+    } catch (err) {
+      if (err.response?.status === 400) {
+        alert("You already voted in this poll.");
         setHasVoted(true);
       }
     }
   };
 
-  const connectWebSocket = (id) => {
+  const connectWebSocket = () => {
     const socket = new SockJS(WS_URL);
     const client = new Client({
       webSocketFactory: () => socket,
+      reconnectDelay: 5000,
       onConnect: () => {
         client.subscribe(`/topic/poll/${id}`, (message) => {
-          const updatedPoll = JSON.parse(message.body);
-          setPoll(updatedPoll);
+          setPoll(JSON.parse(message.body));
         });
       }
     });
@@ -80,119 +160,83 @@ function App() {
     client.activate();
   };
 
-  const totalVotes = poll
-    ? poll.options.reduce((sum, opt) => sum + opt.voteCount, 0)
-    : 0;
+  if (!poll) return <div style={styles.container}>Loading...</div>;
+
+  const totalVotes = poll.options.reduce(
+    (sum, opt) => sum + opt.voteCount,
+    0
+  );
 
   return (
     <div style={styles.container}>
-      <h1 style={styles.title}>Real-Time Polling</h1>
+      <button style={styles.backButton} onClick={() => navigate("/")}>
+        ← Back
+      </button>
 
-      {!poll && (
-        <>
-          <div style={styles.card}>
-            <h2>Create Poll</h2>
-            <input
-              style={styles.input}
-              placeholder="Question"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-            />
+      <h2>{poll.question}</h2>
 
-            {options.map((opt, i) => (
-              <input
-                key={i}
-                style={styles.input}
-                placeholder={`Option ${i + 1}`}
-                value={opt}
-                onChange={(e) => {
-                  const newOptions = [...options];
-                  newOptions[i] = e.target.value;
-                  setOptions(newOptions);
-                }}
-              />
-            ))}
+      <p>
+        Share this link:
+        <br />
+        <strong>{window.location.href}</strong>
+      </p>
 
+      <p>Total Votes: {totalVotes}</p>
+
+      {poll.options.map(opt => {
+        const percentage =
+          totalVotes === 0
+            ? 0
+            : ((opt.voteCount / totalVotes) * 100).toFixed(1);
+
+        return (
+          <div key={opt.id} style={{ marginBottom: 15 }}>
             <button
-              style={styles.secondaryButton}
-              onClick={() => setOptions([...options, ""])}
+              style={{
+                ...styles.voteButton,
+                opacity: hasVoted ? 0.6 : 1
+              }}
+              disabled={hasVoted}
+              onClick={() => vote(opt.id)}
             >
-              Add Option
+              {opt.text}
             </button>
 
-            <button style={styles.primaryButton} onClick={createPoll}>
-              Create Poll
-            </button>
+            {hasVoted && (
+              <>
+                <div style={styles.progressBar}>
+                  <div
+                    style={{
+                      ...styles.progressFill,
+                      width: `${percentage}%`
+                    }}
+                  />
+                </div>
+                <small>
+                  {opt.voteCount} votes ({percentage}%)
+                </small>
+              </>
+            )}
           </div>
-
-          <h2 style={{ marginTop: 40 }}>Available Polls</h2>
-
-          {polls.map((p) => (
-            <div key={p.id} style={styles.pollCard}>
-              <strong>{p.question}</strong>
-              <button
-                style={styles.primaryButton}
-                onClick={() => joinPoll(p.id)}
-              >
-                Join
-              </button>
-            </div>
-          ))}
-        </>
-      )}
-
-      {poll && (
-        <div style={styles.card}>
-          <button style={styles.backButton} onClick={() => setPoll(null)}>
-            ← Back
-          </button>
-
-          <h2>{poll.question}</h2>
-          <p>Total Votes: {totalVotes}</p>
-
-          {poll.options.map((opt) => {
-            const percentage =
-              totalVotes === 0
-                ? 0
-                : ((opt.voteCount / totalVotes) * 100).toFixed(1);
-
-            return (
-              <div key={opt.id} style={{ marginBottom: 15 }}>
-                <button
-                  style={{
-                    ...styles.voteButton,
-                    opacity: hasVoted ? 0.6 : 1
-                  }}
-                  disabled={hasVoted}
-                  onClick={() => vote(opt.id)}
-                >
-                  {opt.text}
-                </button>
-
-                {hasVoted && (
-                  <>
-                    <div style={styles.progressBar}>
-                      <div
-                        style={{
-                          ...styles.progressFill,
-                          width: `${percentage}%`
-                        }}
-                      ></div>
-                    </div>
-                    <small>
-                      {opt.voteCount} votes ({percentage}%)
-                    </small>
-                  </>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+        );
+      })}
     </div>
   );
 }
 
+/* ---------------- MAIN APP ---------------- */
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/poll/:id" element={<PollPage />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+/* ---------------- STYLES ---------------- */
 const styles = {
   container: {
     maxWidth: 600,
@@ -200,11 +244,9 @@ const styles = {
     padding: 20,
     fontFamily: "Arial"
   },
-  title: {
-    textAlign: "center"
-  },
+  title: { textAlign: "center" },
   card: {
-    background: "#ffffff",
+    background: "#fff",
     padding: 20,
     borderRadius: 10,
     boxShadow: "0 4px 10px rgba(0,0,0,0.1)"

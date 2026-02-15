@@ -3,8 +3,8 @@ import axios from "axios";
 import SockJS from "sockjs-client";
 import { Client } from "@stomp/stompjs";
 
-const API = "http://localhost:8080/api/polls";
-const WS_URL = "http://localhost:8080/ws";
+const API = "/api/polls";
+const WS_URL = "/ws";
 
 function App() {
   const [polls, setPolls] = useState([]);
